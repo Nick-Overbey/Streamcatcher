@@ -5,6 +5,10 @@ set -euo pipefail
 USER_TO_ADD="${SUDO_USER:-$(whoami)}"
 USER_HOME="$(eval echo "~$USER_TO_ADD")"
 INSTALL_DIR="$USER_HOME/dockers/n8n"
+# Directory for auxiliary scripts
+SCRIPT_DIR="$USER_HOME/scripting"
+# Raw URL for check-channels script
+CHECK_CHANNELS_URL="https://raw.githubusercontent.com/Nick-Overbey/Streamcatcher/main/check-channels"
 ### ↑ END EDITS ↑
 
 # 1) Ensure running as root
@@ -36,7 +40,13 @@ usermod -aG docker "$USER_TO_ADD"
 mkdir -p "$INSTALL_DIR/db_data" "$INSTALL_DIR/n8n_data"
 chown -R "$USER_TO_ADD":"$USER_TO_ADD" "$USER_HOME/dockers"
 
-# 5) Write the .env with fixed credentials
+# 5) Create scripting directory and download helper script
+mkdir -p "$SCRIPT_DIR"
+chown -R "$USER_TO_ADD":"$USER_TO_ADD" "$SCRIPT_DIR"
+curl -fsSL "$CHECK_CHANNELS_URL" -o "$SCRIPT_DIR/check-channels"
+chmod +x "$SCRIPT_DIR/check-channels"
+
+# 6) Write the .env with fixed credentials
 cat > "$INSTALL_DIR/.env" <<EOF
 POSTGRES_USER=n8n_user
 POSTGRES_PASSWORD=anothersecurepassword
@@ -44,7 +54,7 @@ POSTGRES_DB=n8n
 EOF
 chown "$USER_TO_ADD":"$USER_TO_ADD" "$INSTALL_DIR/.env"
 
-# 6) Write docker-compose.yml (no version line)
+# 7) Write docker-compose.yml (no version line)
 cat > "$INSTALL_DIR/docker-compose.yml" <<EOF
 
 volumes:
@@ -103,7 +113,7 @@ services:
 EOF
 chown "$USER_TO_ADD":"$USER_TO_ADD" "$INSTALL_DIR/docker-compose.yml"
 
-# 7) Launch the stack
+# 8) Launch the stack
 cd "$INSTALL_DIR"
 docker compose pull
 docker compose up -d
@@ -117,5 +127,6 @@ Next steps:
  • Log out & back in (or run: newgrp docker) so you can use Docker without sudo.
  • Verify with: docker ps
  • Once Postgres shows “healthy”, open your browser to http://localhost:5678
+ • Your helper script is at: $SCRIPT_DIR/check-channels
 
 MSG
