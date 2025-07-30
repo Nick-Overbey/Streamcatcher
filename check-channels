@@ -1,0 +1,116 @@
+#!/bin/bash
+
+echo "Enter the filename containing the URLs:"
+read file_name
+
+output_file="output.log"
+
+while IFS= read -r url
+do
+  echo -e "\n\n================================" >> "$output_file"
+  echo "NEXT STREAM REPORT" >> "$output_file"
+  echo "================================" >> "$output_file"
+
+  echo -e "\nProcessing URL: $url" >> "$output_file"
+
+  if [[ $url == *.m3u8 ]]; then
+    echo "Detected HLS stream." >> "$output_file"
+    temp_file=$(mktemp)
+    if curl -sL --max-time 5 "$url" > "$temp_file"; then
+      if grep -q 'EXTM3U' "$temp_file"; then
+        echo -e "\nHLS Version:" >> "$output_file"
+        version=$(grep '#EXT-X-VERSION' "$temp_file" | cut -d':' -f2)
+        if [[ -n "$version" ]]; then
+          echo "$version" >> "$output_file"
+        else
+          echo "Not declared (defaults to version 1)" >> "$output_file"
+        fi
+
+        if grep -q '#EXT-X-MEDIA:TYPE=AUDIO' "$temp_file"; then
+          echo "Audio and video are delivered as separate files (demuxed)." >> "$output_file"
+        else
+          echo "Audio and video are combined in the same segments (muxed)." >> "$output_file"
+        fi
+
+        echo -e "\nStream Variants:" >> "$output_file"
+        while IFS= read -r line; do
+          if [[ $line == \#EXT-X-STREAM-INF:* ]]; then
+            bandwidth=$(echo "$line" | sed -n 's/.*BANDWIDTH=\([0-9]*\).*/\1/p')
+            res=$(echo "$line" | sed -n 's/.*RESOLUTION=\([0-9]*x[0-9]*\).*/\1/p')
+            codecs=$(echo "$line" | sed -n 's/.*CODECS="\([^"]*\)".*/\1/p')
+            bw_mbps=$(awk "BEGIN {printf \"%.2f Mbps\", $bandwidth / 1000000}")
+            printf "  Resolution: %s | Bandwidth: %s | Codecs: %s\n" "$res" "$bw_mbps" "$codecs" >> "$output_file"
+          fi
+        done < "$temp_file"
+
+        echo -e "\nUnique codec declarations:" >> "$output_file"
+        grep -o 'CODECS="[^\"]*"' "$temp_file" | sed 's/CODECS=//' | sort | uniq >> "$output_file"
+
+        echo -e "\nLow-Latency Tags:" >> "$output_file"
+        ll_found=false
+        grep -q '#EXT-X-PART' "$temp_file" && echo "  #EXT-X-PART found → Low‑Latency HLS" >> "$output_file" && ll_found=true
+        grep -q '#EXT-X-SERVER-CONTROL' "$temp_file" && echo "  #EXT-X-SERVER-CONTROL found" >> "$output_file" && ll_found=true
+        grep -q '#EXT-X-PRELOAD-HINT' "$temp_file" && echo "  #EXT-X-PRELOAD-HINT found" >> "$output_file" && ll_found=true
+        [ "$ll_found" = false ] && echo "  None" >> "$output_file"
+
+        target_duration=$(grep '#EXT-X-TARGETDURATION' "$temp_file" | cut -d':' -f2)
+        if [[ -n "$target_duration" ]]; then
+          echo -e "\nTarget duration (max segment length): ${target_duration}s" >> "$output_file"
+        fi
+
+        if grep -q '#EXT-X-MEDIA:TYPE=AUDIO' "$temp_file"; then
+          echo -e "\nAudio Tracks:" >> "$output_file"
+          grep '#EXT-X-MEDIA:TYPE=AUDIO' "$temp_file" | while IFS= read -r line; do
+            language=$(echo "$line" | sed -n 's/.*LANGUAGE="\([^"]*\)".*/\1/p')
+            group=$(echo "$line" | sed -n 's/.*GROUP-ID="\([^"]*\)".*/\1/p')
+            name=$(echo "$line" | sed -n 's/.*NAME="\([^"]*\)".*/\1/p')
+            default=$(echo "$line" | sed -n 's/.*DEFAULT=\([^,]*\).*/\1/p')
+            autoselect=$(echo "$line" | sed -n 's/.*AUTOSELECT=\([^,]*\).*/\1/p')
+            uri=$(echo "$line" | sed -n 's/.*URI="\([^"]*\)".*/\1/p')
+            echo "  - Name: $name" >> "$output_file"
+            echo "    Language: $language" >> "$output_file"
+            echo "    Group-ID: $group" >> "$output_file"
+            echo "    Default: $default" >> "$output_file"
+            echo "    Autoselect: $autoselect" >> "$output_file"
+            echo "    URI: $uri" >> "$output_file"
+          done
+        fi
+
+      else
+        echo "Manifest file downloaded but does not contain valid HLS data." >> "$output_file"
+      fi
+      rm "$temp_file"
+    else
+      echo "URL did not respond within 5 seconds or curl encountered an error." >> "$output_file"
+    fi
+
+  elif [[ $url == *.mpd ]]; then
+    echo "Detected DASH stream." >> "$output_file"
+    temp_file=$(mktemp)
+    if curl -sL --max-time 5 "$url" > "$temp_file"; then
+      echo -e "\nAdaptationSet details:" >> "$output_file"
+      grep '<Representation' "$temp_file" | while read -r line; do
+        bandwidth=$(echo "$line" | sed -n 's/.*bandwidth="\([^"]*\)".*/\1/p')
+        codec=$(echo "$line" | sed -n 's/.*codecs="\([^"]*\)".*/\1/p')
+        resolution=$(echo "$line" | sed -n 's/.*width="\([^"]*\)".*height="\([^"]*\)".*/\1x\2/p')
+
+        if [[ -z "$bandwidth" || -z "$codec" || -z "$resolution" ]]; then
+          continue
+        fi
+
+        bw_mbps=$(awk "BEGIN {printf \"%.2f Mbps\", $bandwidth / 1000000}")
+        echo "  Codec: $codec, Bandwidth: $bw_mbps, Resolution: $resolution" >> "$output_file"
+      done
+      rm "$temp_file"
+    else
+      echo "URL did not respond within 5 seconds or curl encountered an error." >> "$output_file"
+    fi
+
+  else
+    echo "URL does not end in .m3u8 or .mpd, skipping." >> "$output_file"
+  fi
+
+done < "$file_name"
+
+echo "Processing complete. Output saved to $output_file."
+
