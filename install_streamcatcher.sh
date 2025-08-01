@@ -1,132 +1,144 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### ← EDIT THESE IF NEEDED ↓
-USER_TO_ADD="${SUDO_USER:-$(whoami)}"
-USER_HOME="$(eval echo "~$USER_TO_ADD")"
-INSTALL_DIR="$USER_HOME/dockers/n8n"
-# Directory for auxiliary scripts
-SCRIPT_DIR="$USER_HOME/scripting"
-# Raw URL for check-channels script
-CHECK_CHANNELS_URL="https://raw.githubusercontent.com/Nick-Overbey/Streamcatcher/main/check-channels"
-### ↑ END EDITS ↑
+# Installer for ABR video probe tooling
+# - creates ~/scripts and ~/elecard
+# - downloads GitHub scripts into ~/scripts and makes them executable
+# - downloads Elecard package from Google Drive and unzips it
 
-# 1) Ensure running as root
-if [[ $EUID -ne 0 ]]; then
-  echo "Please run this script with sudo or as root."
-  exit 1
-fi
+LOG_PREFIX="[install_probe]"
 
-# 2) Install Docker Engine & Compose plugin
-apt-get update
-apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+log() {
+  echo "${LOG_PREFIX} $*"
+}
 
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-  | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+# Ensure required basic tools exist: curl or wget, unzip
+need_cmd() {
+  if ! command -v "$1" &>/dev/null; then
+    echo "${LOG_PREFIX} ERROR: Required command '$1' not found."
+    return 1
+  fi
+  return 0
+}
 
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-  https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" \
-  > /etc/apt/sources.list.d/docker.list
+# Try to install unzip if missing and we have sudo/apt
+ensure_unzip() {
+  if command -v unzip &>/dev/null; then
+    return
+  fi
+  log "unzip not found."
+  if command -v apt-get &>/dev/null; then
+    if [ "$(id -u)" -eq 0 ] || command -v sudo &>/dev/null; then
+      log "Attempting to install unzip via apt."
+      if command -v sudo &>/dev/null && [ "$(id -u)" -ne 0 ]; then
+        sudo apt-get update
+        sudo apt-get install -y unzip
+      else
+        apt-get update
+        apt-get install -y unzip
+      fi
+      if ! command -v unzip &>/dev/null; then
+        echo "${LOG_PREFIX} ERROR: unzip installation failed. Please install unzip manually."
+        exit 1
+      fi
+    else
+      echo "${LOG_PREFIX} ERROR: unzip is required but not installed, and no sudo available to install it. Install unzip manually."
+      exit 1
+    fi
+  else
+    echo "${LOG_PREFIX} ERROR: unzip is required but not installed, and no recognized package manager found. Install unzip manually."
+    exit 1
+  fi
+}
 
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+# Google Drive download function (handles large-file confirmation)
+gdrive_download() {
+  local fileid=$1
+  local destination=$2
 
-# 3) Add your user to the 'docker' group
-usermod -aG docker "$USER_TO_ADD"
+  if need_cmd curl; then
+    :
+  else
+    echo "${LOG_PREFIX} ERROR: curl is required for Google Drive download."
+    exit 1
+  fi
 
-# 4) Create n8n directory structure
-mkdir -p "$INSTALL_DIR/db_data" "$INSTALL_DIR/n8n_data"
-chown -R "$USER_TO_ADD":"$USER_TO_ADD" "$USER_HOME/dockers"
+  log "Starting download from Google Drive (id=${fileid}) to ${destination}"
 
-# 5) Create scripting directory and download helper script
-mkdir -p "$SCRIPT_DIR"
-chown -R "$USER_TO_ADD":"$USER_TO_ADD" "$SCRIPT_DIR"
-curl -fsSL "$CHECK_CHANNELS_URL" -o "$SCRIPT_DIR/check-channels"
-chmod +x "$SCRIPT_DIR/check-channels"
+  # Fetch the initial page to get confirm token
+  local tmp_html
+  tmp_html=$(mktemp)
+  local cookie
+  cookie=$(mktemp)
 
-# 6) Write the .env with fixed credentials
-cat > "$INSTALL_DIR/.env" <<EOF
-POSTGRES_USER=n8n_user
-POSTGRES_PASSWORD=anothersecurepassword
-POSTGRES_DB=n8n
-EOF
-chown "$USER_TO_ADD":"$USER_TO_ADD" "$INSTALL_DIR/.env"
+  # Get the confirmation token page
+  curl -c "${cookie}" -s -L "https://drive.google.com/uc?export=download&id=${fileid}" -o "${tmp_html}"
 
-# 7) Write docker-compose.yml (no version line)
-cat > "$INSTALL_DIR/docker-compose.yml" <<EOF
+  # Try to extract confirm token
+  local confirm
+  confirm=$(sed -n 's/.*confirm=\([0-9A-Za-z_\-]*\).*/\1/p' "${tmp_html}" | head -n1)
 
-volumes:
-  db_storage:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: $INSTALL_DIR/db_data
+  if [[ -n "${confirm}" ]]; then
+    log "Detected confirm token, using it to download large file."
+    curl -Lb "${cookie}" -s -L "https://drive.google.com/uc?export=download&confirm=${confirm}&id=${fileid}" -o "${destination}"
+  else
+    log "No confirm token needed; downloading directly."
+    curl -Lb "${cookie}" -s -L "https://drive.google.com/uc?export=download&id=${fileid}" -o "${destination}"
+  fi
 
-  n8n_storage:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: $INSTALL_DIR/n8n_data
+  rm -f "${tmp_html}" "${cookie}"
 
-services:
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - TZ=US/Eastern
-    volumes:
-      - db_storage:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -h localhost -U \${POSTGRES_USER} -d \${POSTGRES_DB}']
-      interval: 5s
-      timeout: 5s
-      retries: 10
+  if [[ ! -s "${destination}" ]]; then
+    echo "${LOG_PREFIX} ERROR: Downloaded file is empty or failed."
+    exit 1
+  fi
+  log "Downloaded Google Drive file to ${destination}"
+}
 
-  n8n:
-    image: docker.n8n.io/n8nio/n8n
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=\${POSTGRES_DB}
-      - DB_POSTGRESDB_USER=\${POSTGRES_USER}
-      - DB_POSTGRESDB_PASSWORD=\${POSTGRES_PASSWORD}
-      - TZ=US/Eastern
-      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
-      - N8N_SECURE_COOKIE=false
-    ports:
-      - 5678:5678
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - n8n_storage:/home/node/.n8n
-EOF
-chown "$USER_TO_ADD":"$USER_TO_ADD" "$INSTALL_DIR/docker-compose.yml"
+# Start of main logic
+USER_HOME="${HOME}"
+SCRIPTS_DIR="${USER_HOME}/scripts"
+ELECARD_DIR="${USER_HOME}/elecard"
 
-# 8) Launch the stack
-cd "$INSTALL_DIR"
-docker compose pull
-docker compose up -d
+# 1. Create directories
+log "Creating directories if they don't exist."
+mkdir -p "${SCRIPTS_DIR}"
+mkdir -p "${ELECARD_DIR}"
 
-cat <<MSG
+# 2. Download GitHub scripts
+declare -A GITHUB_FILES=(
+  ["check-channels"]="https://raw.githubusercontent.com/Nick-Overbey/Streamcatcher/refs/heads/main/check-channels"
+  ["baseline-tester.sh"]="https://raw.githubusercontent.com/Nick-Overbey/Streamcatcher/refs/heads/main/baseline-tester.sh"
+)
 
-✅  Streamcatcher (n8n) is installed at:
-   $INSTALL_DIR
+for name in "${!GITHUB_FILES[@]}"; do
+  url="${GITHUB_FILES[$name]}"
+  dest="${SCRIPTS_DIR}/${name}"
+  log "Downloading ${name} from GitHub to ${dest}"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "${url}" -o "${dest}"
+  elif command -v wget &>/dev/null; then
+    wget -qO "${dest}" "${url}"
+  else
+    echo "${LOG_PREFIX} ERROR: Neither curl nor wget is available to download GitHub scripts."
+    exit 1
+  fi
+  chmod +x "${dest}"
+  log "Downloaded and made executable: ${dest}"
+done
 
-Next steps:
- • Log out & back in (or run: newgrp docker) so you can use Docker without sudo.
- • Verify with: docker ps
- • Once Postgres shows “healthy”, open your browser to http://localhost:5678
- • Your helper script is at: $SCRIPT_DIR/check-channels
+# 3. Download Elecard ZIP from Google Drive
+GDRIVE_FILEID="1XVNhnOlih8i8mKJkbMzz4nkMb15eoSvF"
+ELECARD_ZIP="${ELECARD_DIR}/elecard.zip"
 
-MSG
+ensure_unzip
+gdrive_download "${GDRIVE_FILEID}" "${ELECARD_ZIP}"
+
+# 4. Unzip into elecard directory
+log "Unzipping ${ELECARD_ZIP} into ${ELECARD_DIR}"
+unzip -o "${ELECARD_ZIP}" -d "${ELECARD_DIR}"
+
+log "Cleaning up zip file"
+rm -f "${ELECARD_ZIP}"
+
+log "Install script completed successfully."
