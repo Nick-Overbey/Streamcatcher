@@ -7,90 +7,44 @@ log() {
   echo "${LOG_PREFIX} $*"
 }
 
-# Ensure command exists
+# Ensure a command exists
 require_cmd() {
   if ! command -v "$1" &>/dev/null; then
-    echo "${LOG_PREFIX} ERROR: Required command '$1' not found."
     return 1
   fi
   return 0
 }
 
-# Ensure unzip is installed (try installing via apt if missing)
-ensure_unzip() {
-  if command -v unzip &>/dev/null; then
-    return
-  fi
-  log "unzip not found."
-  if command -v apt-get &>/dev/null; then
-    if [ "$(id -u)" -eq 0 ] || command -v sudo &>/dev/null; then
-      log "Attempting to install unzip via apt."
-      if command -v sudo &>/dev/null && [ "$(id -u)" -ne 0 ]; then
+# Install a package if apt is available
+apt_install_if_missing() {
+  local pkg=$1
+  if ! require_cmd "$pkg"; then
+    if command -v apt-get &>/dev/null; then
+      log "Installing ${pkg} via apt."
+      if [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null; then
         sudo apt-get update -y
-        sudo apt-get install -y unzip
+        sudo sudo apt-get install -y "${pkg}"
       else
         apt-get update -y
-        apt-get install -y unzip
-      fi
-      if ! command -v unzip &>/dev/null; then
-        echo "${LOG_PREFIX} ERROR: unzip installation failed. Install manually."
-        exit 1
+        apt-get install -y "${pkg}"
       fi
     else
-      echo "${LOG_PREFIX} ERROR: unzip required but cannot install (no sudo/root). Install manually."
+      echo "${LOG_PREFIX} ERROR: cannot install ${pkg}; apt-get not available. Install manually." >&2
       exit 1
     fi
-  else
-    echo "${LOG_PREFIX} ERROR: Cannot install unzip automatically (no apt). Install manually."
-    exit 1
   fi
 }
 
-# Google Drive download with confirmation token handling
-gdrive_download() {
-  local fileid=$1
-  local destination=$2
-
-  require_cmd curl || { echo "${LOG_PREFIX} curl is required."; exit 1; }
-
-  log "Downloading Google Drive file id=${fileid} to ${destination}"
-  local tmp_html
-  tmp_html=$(mktemp)
-  local cookie
-  cookie=$(mktemp)
-
-  curl -c "${cookie}" -s -L "https://drive.google.com/uc?export=download&id=${fileid}" -o "${tmp_html}"
-
-  local confirm
-  confirm=$(sed -n 's/.*confirm=\([0-9A-Za-z_\-]*\).*/\1/p' "${tmp_html}" | head -n1)
-
-  if [[ -n "${confirm}" ]]; then
-    log "Using confirmation token to fetch large file."
-    curl -Lb "${cookie}" -s -L "https://drive.google.com/uc?export=download&confirm=${confirm}&id=${fileid}" -o "${destination}"
-  else
-    log "No confirmation token needed; downloading directly."
-    curl -Lb "${cookie}" -s -L "https://drive.google.com/uc?export=download&id=${fileid}" -o "${destination}"
-  fi
-
-  rm -f "${tmp_html}" "${cookie}"
-
-  if [[ ! -s "${destination}" ]]; then
-    echo "${LOG_PREFIX} ERROR: Download failed or empty file at ${destination}"
-    exit 1
-  fi
-  log "Download complete: ${destination}"
-}
-
-# Begin
+# Begin setup
 USER_HOME="${HOME}"
 SCRIPTS_DIR="${USER_HOME}/scripts"
 ELECARD_DIR="${USER_HOME}/elecard"
 
-log "Creating directories."
+log "Creating required directories."
 mkdir -p "${SCRIPTS_DIR}"
 mkdir -p "${ELECARD_DIR}"
 
-# Download GitHub helper scripts
+# Download GitHub scripts
 declare -A GITHUB_FILES=(
   ["check-channels"]="https://raw.githubusercontent.com/Nick-Overbey/Streamcatcher/refs/heads/main/check-channels"
   ["baseline-tester.sh"]="https://raw.githubusercontent.com/Nick-Overbey/Streamcatcher/refs/heads/main/baseline-tester.sh"
@@ -99,44 +53,82 @@ declare -A GITHUB_FILES=(
 for fname in "${!GITHUB_FILES[@]}"; do
   url="${GITHUB_FILES[$fname]}"
   dest="${SCRIPTS_DIR}/${fname}"
-  log "Fetching ${fname} from GitHub."
-  if command -v curl &>/dev/null; then
+  log "Fetching ${fname} from ${url}"
+  if require_cmd curl; then
     curl -fsSL "${url}" -o "${dest}"
-  elif command -v wget &>/dev/null; then
+  elif require_cmd wget; then
     wget -qO "${dest}" "${url}"
   else
-    echo "${LOG_PREFIX} ERROR: Neither curl nor wget available to download ${fname}."
+    echo "${LOG_PREFIX} ERROR: neither curl nor wget available to download ${fname}." >&2
     exit 1
   fi
   chmod +x "${dest}"
-  log "Saved and made executable: ${dest}"
+  log "Downloaded and made executable: ${dest}"
 done
 
-# Download Elecard ZIP
-GDRIVE_FILEID="1XVNhnOlih8i8mKJkbMzz4nkMb15eoSvF"
-ELECARD_ZIP="${ELECARD_DIR}/elecard.zip"
+# Ensure unzip is available
+if ! require_cmd unzip; then
+  log "unzip missing; installing."
+  if command -v apt-get &>/dev/null; then
+    if [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null; then
+      sudo apt-get update -y
+      sudo sudo apt-get install -y unzip
+    else
+      apt-get update -y
+      apt-get install -y unzip
+    fi
+  else
+    echo "${LOG_PREFIX} ERROR: cannot install unzip automatically; install manually." >&2
+    exit 1
+  fi
+fi
 
-ensure_unzip
-gdrive_download "${GDRIVE_FILEID}" "${ELECARD_ZIP}"
+# Ensure sshpass is present
+if ! require_cmd sshpass; then
+  log "sshpass not found; installing."
+  if command -v apt-get &>/dev/null; then
+    if [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null; then
+      sudo apt-get update -y
+      sudo sudo apt-get install -y sshpass
+    else
+      apt-get update -y
+      apt-get install -y sshpass
+    fi
+  else
+    echo "${LOG_PREFIX} ERROR: cannot install sshpass automatically; install manually." >&2
+    exit 1
+  fi
+fi
 
-# Extract the zip(s)
-log "Extracting Elecard archive(s) in ${ELECARD_DIR}"
-shopt -s nullglob
-zipfiles=("${ELECARD_DIR}"/*.zip)
-if [ ${#zipfiles[@]} -eq 0 ]; then
-  echo "${LOG_PREFIX} ERROR: No .zip file found to extract in ${ELECARD_DIR}"
+# Download Elecard ZIP from Synology via scp using sshpass
+SYN_USER="elecard"
+SYN_HOST="indianlake.synology.me"
+SYN_PORT="2022"
+SYN_REMOTE_PATH="/sftp/Boro.2.2.5.2025.05.15.proj2141.zip"
+ELECARD_ZIP="${ELECARD_DIR}/Boro.2.2.5.2025.05.15.proj2141.zip"
+SYN_PASSWORD="elecard25"
+
+log "Pulling Elecard ZIP from Synology (${SYN_HOST}) via scp."
+mkdir -p "${ELECARD_DIR}"
+
+sshpass -p "${SYN_PASSWORD}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "${SYN_PORT}" "${SYN_USER}@${SYN_HOST}:${SYN_REMOTE_PATH}" "${ELECARD_ZIP}"
+
+if [[ ! -f "${ELECARD_ZIP}" ]]; then
+  echo "${LOG_PREFIX} ERROR: failed to retrieve Elecard ZIP from Synology." >&2
   exit 1
 fi
 
-for z in "${zipfiles[@]}"; do
-  log "Unzipping ${z}"
-  unzip -o "${z}" -d "${ELECARD_DIR}"
-done
+# Validate ZIP signature (PK\x03\x04)
+if head -c4 "${ELECARD_ZIP}" | grep -q $'\x50\x4B\x03\x04'; then
+  log "Elecard ZIP appears valid; extracting."
+else
+  echo "${LOG_PREFIX} ERROR: downloaded Elecard file is not a valid ZIP. Dumping first 512 bytes for inspection:" >&2
+  head -c512 "${ELECARD_ZIP}" | sed 's/^/>> /'
+  exit 1
+fi
 
-# Cleanup zip files
-log "Removing zip file(s)"
-for z in "${zipfiles[@]}"; do
-  rm -f "${z}"
-done
+unzip -o "${ELECARD_ZIP}" -d "${ELECARD_DIR}"
+rm -f "${ELECARD_ZIP}"
+log "Elecard extraction complete."
 
-log "All done."
+log "Install script finished successfully."
