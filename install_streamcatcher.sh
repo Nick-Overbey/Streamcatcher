@@ -69,7 +69,7 @@ apt_install_if_missing unzip
 # New: download Elecard ZIP via HTTP from your Nginx host
 # ------------------------------------------------------------------
 ELECARD_ZIP="${ELECARD_DIR}/Boro.2.2.5.2025.05.15.proj2141.zip"
-ELECARD_URL="http://192.168.40.31:49723/Boro.2.2.5.2025.05.15.proj2141.zip"
+ELECARD_URL="http://indianlake.synology.me:49723/Boro.2.2.5.2025.05.15.proj2141.zip"
 
 log "Downloading Elecard ZIP from ${ELECARD_URL}"
 if require_cmd curl; then
