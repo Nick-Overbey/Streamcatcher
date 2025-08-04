@@ -9,21 +9,18 @@ log() {
 
 # Ensure a command exists
 require_cmd() {
-  if ! command -v "$1" &>/dev/null; then
-    return 1
-  fi
-  return 0
+  command -v "$1" &>/dev/null
 }
 
 # Install a package if apt is available
 apt_install_if_missing() {
   local pkg=$1
   if ! require_cmd "$pkg"; then
-    if command -v apt-get &>/dev/null; then
+    if require_cmd apt-get; then
       log "Installing ${pkg} via apt."
-      if [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null; then
+      if [ "$(id -u)" -ne 0 ] && require_cmd sudo; then
         sudo apt-get update -y
-        sudo sudo apt-get install -y "${pkg}"
+        sudo apt-get install -y "${pkg}"
       else
         apt-get update -y
         apt-get install -y "${pkg}"
@@ -41,8 +38,7 @@ SCRIPTS_DIR="${USER_HOME}/scripts"
 ELECARD_DIR="${USER_HOME}/elecard"
 
 log "Creating required directories."
-mkdir -p "${SCRIPTS_DIR}"
-mkdir -p "${ELECARD_DIR}"
+mkdir -p "${SCRIPTS_DIR}" "${ELECARD_DIR}"
 
 # Download GitHub scripts
 declare -A GITHUB_FILES=(
@@ -67,54 +63,26 @@ for fname in "${!GITHUB_FILES[@]}"; do
 done
 
 # Ensure unzip is available
-if ! require_cmd unzip; then
-  log "unzip missing; installing."
-  if command -v apt-get &>/dev/null; then
-    if [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null; then
-      sudo apt-get update -y
-      sudo sudo apt-get install -y unzip
-    else
-      apt-get update -y
-      apt-get install -y unzip
-    fi
-  else
-    echo "${LOG_PREFIX} ERROR: cannot install unzip automatically; install manually." >&2
-    exit 1
-  fi
-fi
+apt_install_if_missing unzip
 
-# Ensure sshpass is present
-if ! require_cmd sshpass; then
-  log "sshpass not found; installing."
-  if command -v apt-get &>/dev/null; then
-    if [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null; then
-      sudo apt-get update -y
-      sudo sudo apt-get install -y sshpass
-    else
-      apt-get update -y
-      apt-get install -y sshpass
-    fi
-  else
-    echo "${LOG_PREFIX} ERROR: cannot install sshpass automatically; install manually." >&2
-    exit 1
-  fi
-fi
-
-# Download Elecard ZIP from Synology via scp using sshpass
-SYN_USER="elecard"
-SYN_HOST="indianlake.synology.me"
-SYN_PORT="2022"
-SYN_REMOTE_PATH="/sftp/Boro.2.2.5.2025.05.15.proj2141.zip"
+# ------------------------------------------------------------------
+# New: download Elecard ZIP via HTTP from your Nginx host
+# ------------------------------------------------------------------
 ELECARD_ZIP="${ELECARD_DIR}/Boro.2.2.5.2025.05.15.proj2141.zip"
-SYN_PASSWORD="elecard25"
+ELECARD_URL="http://192.168.40.31:49723/Boro.2.2.5.2025.05.15.proj2141.zip"
 
-log "Pulling Elecard ZIP from Synology (${SYN_HOST}) via scp."
-mkdir -p "${ELECARD_DIR}"
+log "Downloading Elecard ZIP from ${ELECARD_URL}"
+if require_cmd curl; then
+  curl -fsSL "${ELECARD_URL}" -o "${ELECARD_ZIP}"
+elif require_cmd wget; then
+  wget -qO "${ELECARD_ZIP}" "${ELECARD_URL}"
+else
+  echo "${LOG_PREFIX} ERROR: neither curl nor wget available to fetch Elecard ZIP." >&2
+  exit 1
+fi
 
-sshpass -p "${SYN_PASSWORD}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "${SYN_PORT}" "${SYN_USER}@${SYN_HOST}:${SYN_REMOTE_PATH}" "${ELECARD_ZIP}"
-
-if [[ ! -f "${ELECARD_ZIP}" ]]; then
-  echo "${LOG_PREFIX} ERROR: failed to retrieve Elecard ZIP from Synology." >&2
+if [[ ! -s "${ELECARD_ZIP}" ]]; then
+  echo "${LOG_PREFIX} ERROR: download failed or empty file at ${ELECARD_ZIP}" >&2
   exit 1
 fi
 
