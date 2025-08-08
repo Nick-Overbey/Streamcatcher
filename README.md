@@ -6,7 +6,7 @@ This repo contains `install_streamcatcher.sh`, an installer for the ABR video pr
 
 - Creates required working directories (`~/scripts`, `~/elecard`)
 - Downloads helper scripts (`check-channels` and `baseline-tester.sh`) from the Streamcatcher GitHub repo and makes them executable
-- Retrieves the Elecard ZIP package via SCP/SFTP
+- Retrieves the Elecard ZIP package
 - Validates that the downloaded file is a real ZIP (checks magic bytes)
 - Extracts the Elecard package into `~/elecard`
 
