@@ -11,9 +11,11 @@ read -p "Enter iperf3 server IP (leave blank to skip iperf tests): " IPERF_SERVE
 read -p "Enter ABR stream URL (manifest or segment): " TEST_URL
 CDN_HOST=$(echo "$TEST_URL" | awk -F/ '{print $3}')
 
-LOGDIR="/home/minerva/scripts/logs"
+# Always log to ~/scripts, create directory if needed
+LOGDIR="$HOME/scripts"
 mkdir -p "$LOGDIR"
 LOGFILE="$LOGDIR/abr_test_${SITE_CLEAN}_$(date +%Y-%m-%d_%H%M%S).log"
+
 echo "ABR Network Test Log - $(date)" | tee "$LOGFILE"
 echo "Site: $SITE_NAME" | tee -a "$LOGFILE"
 echo "iperf3 Server: ${IPERF_SERVER:-[skipped]}" | tee -a "$LOGFILE"
