@@ -16,7 +16,7 @@ if [[ -z "$OPERATOR" ]]; then
     exit 1
 fi
 
-# Normalize (lowercase, no spaces)
+# Normalize operator name
 OPERATOR=$(echo "$OPERATOR" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
 
 # ----------------------------
@@ -33,21 +33,31 @@ HOSTS=()
 
 for ((i=1; i<=CDN_COUNT; i++)); do
     read -p "Enter CDN server URL #$i: " URL
-    HOSTS+=("\"$URL\"")
+    HOSTS+=(""$URL"")
 done
 
 # Always include Google baseline
-HOSTS+=("\"google.com\"")
+HOSTS+=(""google.com"")
 
 # ----------------------------
-# Create directories
+# Resolve home directory safely
 # ----------------------------
-mkdir -p ~/scripts
-mkdir -p ~/scripts/logs
+USER_HOME=$(eval echo "~$(whoami)")
 
-PING_SCRIPT=~/scripts/${OPERATOR}-ping.sh
-SERVICE_NAME=${OPERATOR}-ping
-LOG_FILE=~/scripts/logs/${OPERATOR}_ping_monitor.log
+SCRIPTS_DIR="$USER_HOME/scripts"
+LOG_DIR="$SCRIPTS_DIR/logs"
+
+mkdir -p "$SCRIPTS_DIR"
+mkdir -p "$LOG_DIR"
+
+echo ""
+echo "Scripts directory: $SCRIPTS_DIR"
+echo "Log directory: $LOG_DIR"
+echo ""
+
+PING_SCRIPT="$SCRIPTS_DIR/${OPERATOR}-ping.sh"
+SERVICE_NAME="${OPERATOR}-ping"
+LOG_FILE="$LOG_DIR/${OPERATOR}_ping_monitor.log"
 
 # ----------------------------
 # Create ping script
@@ -55,7 +65,6 @@ LOG_FILE=~/scripts/logs/${OPERATOR}_ping_monitor.log
 cat > "$PING_SCRIPT" <<EOF
 #!/bin/bash
 
-THRESHOLD=25
 COUNT=5
 TIMEOUT=3
 INTERVAL=20
@@ -64,48 +73,42 @@ HOSTS=(
 $(printf "    %s\n" "${HOSTS[@]}")
 )
 
-LOG_DIR="\$HOME/scripts/logs"
-LOG_FILE="\$LOG_DIR/${OPERATOR}_ping_monitor.log"
+LOG_DIR="$HOME/scripts/logs"
+LOG_FILE="$LOG_DIR/${OPERATOR}_ping_monitor.log"
 
-mkdir -p "\$LOG_DIR"
+mkdir -p "$LOG_DIR"
 
-if [ \$# -eq 1 ]; then
-    if [[ \$1 =~ ^[0-9]+$ ]] && [ "\$1" -ge 0 ] && [ "\$1" -le 100 ]; then
-        THRESHOLD=\$1
-    fi
-fi
-
-echo "Starting ${OPERATOR} ping monitor with threshold \${THRESHOLD}%"
-echo "Logging to \$LOG_FILE"
+echo "Starting ${OPERATOR} ping monitor"
+echo "Logging to $LOG_FILE"
 
 while true; do
-    TIMESTAMP=\$(date "+%Y-%m-%d %H:%M:%S")
 
-    for HOST in "\${HOSTS[@]}"; do
-        OUTPUT=\$(ping -c \$COUNT -W \$TIMEOUT -q "\$HOST" 2>&1)
-        STATUS=\$?
+    TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
 
-        if [ \$STATUS -ne 0 ]; then
-            echo "\$TIMESTAMP | ERROR | \$HOST | Ping failed (DNS or unreachable)" >> "\$LOG_FILE"
+    for HOST in "${HOSTS[@]}"; do
+
+        OUTPUT=$(ping -c $COUNT -W $TIMEOUT -q "$HOST" 2>&1)
+        STATUS=$?
+
+        if [ $STATUS -ne 0 ]; then
+            echo "$TIMESTAMP | ERROR | $HOST | Ping failed (DNS or unreachable)" >> "$LOG_FILE"
             continue
         fi
 
-        PACKETLOSS=\$(echo "\$OUTPUT" | grep -oP '\\d+(?=% packet loss)')
-        AVG_LATENCY=\$(echo "\$OUTPUT" | awk -F'/' '/rtt/ {print \$5}')
+        PACKETLOSS=$(echo "$OUTPUT" | grep -oP '\d+(?=% packet loss)')
+        AVG_LATENCY=$(echo "$OUTPUT" | awk -F'/' '/rtt/ {print $5}')
 
-        if [ -z "\$PACKETLOSS" ]; then
-            echo "\$TIMESTAMP | ERROR | \$HOST | Could not parse packet loss" >> "\$LOG_FILE"
+        if [ -z "$PACKETLOSS" ]; then
+            echo "$TIMESTAMP | ERROR | $HOST | Could not parse packet loss" >> "$LOG_FILE"
             continue
         fi
 
-        if [ "\$PACKETLOSS" -gt "\$THRESHOLD" ]; then
-            echo "\$TIMESTAMP | ALERT | \$HOST | Packet loss: \${PACKETLOSS}% (Threshold: \${THRESHOLD}%) | Avg Latency: \${AVG_LATENCY} ms" >> "\$LOG_FILE"
-        else
-            echo "\$TIMESTAMP | OK | \$HOST | Packet loss: \${PACKETLOSS}% | Avg Latency: \${AVG_LATENCY} ms" >> "\$LOG_FILE"
-        fi
+        echo "$TIMESTAMP | OK | $HOST | Packet loss: ${PACKETLOSS}% | Avg Latency: ${AVG_LATENCY} ms" >> "$LOG_FILE"
+
     done
 
-    sleep \$INTERVAL
+    sleep $INTERVAL
+
 done
 EOF
 
@@ -126,7 +129,7 @@ ExecStart=$PING_SCRIPT
 Restart=always
 RestartSec=5
 User=$(whoami)
-WorkingDirectory=$HOME/scripts
+WorkingDirectory=$SCRIPTS_DIR
 StandardOutput=null
 StandardError=null
 
@@ -164,9 +167,13 @@ echo "========================================"
 echo " Setup Complete for Operator: $OPERATOR"
 echo "========================================"
 echo ""
+
 sudo systemctl status ${SERVICE_NAME} --no-pager
+
 echo ""
+echo "Logrotate status:"
 systemctl status logrotate.timer --no-pager
+
 echo ""
-echo "Logs:"
-ls -lh ~/scripts/logs
+echo "Logs directory:"
+ls -lh "$LOG_DIR"
