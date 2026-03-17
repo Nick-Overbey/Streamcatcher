@@ -33,11 +33,11 @@ HOSTS=()
 
 for ((i=1; i<=CDN_COUNT; i++)); do
     read -p "Enter CDN server URL #$i: " URL
-    HOSTS+=(""$URL"")
+    HOSTS+=("$URL")
 done
 
 # Always include Google baseline
-HOSTS+=(""google.com"")
+HOSTS+=("google.com")
 
 # ----------------------------
 # Resolve home directory safely
@@ -66,48 +66,51 @@ cat > "$PING_SCRIPT" <<EOF
 #!/bin/bash
 
 COUNT=5
-TIMEOUT=3
 INTERVAL=20
 
 HOSTS=(
 $(printf "    %s\n" "${HOSTS[@]}")
 )
 
-LOG_DIR="$HOME/scripts/logs"
-LOG_FILE="$LOG_DIR/${OPERATOR}_ping_monitor.log"
+LOG_DIR="\$HOME/scripts/logs"
+LOG_FILE="\$LOG_DIR/${OPERATOR}_ping_monitor.log"
 
-mkdir -p "$LOG_DIR"
+mkdir -p "\$LOG_DIR"
 
 echo "Starting ${OPERATOR} ping monitor"
-echo "Logging to $LOG_FILE"
+echo "Logging to \$LOG_FILE"
 
 while true; do
 
-    TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
+    TIMESTAMP=\$(date "+%Y-%m-%d %H:%M:%S %Z")
 
-    for HOST in "${HOSTS[@]}"; do
+    for HOST in "\${HOSTS[@]}"; do
 
-        OUTPUT=$(ping -c $COUNT -W $TIMEOUT -q "$HOST" 2>&1)
-        STATUS=$?
+        OUTPUT=\$(ping -c \$COUNT "\$HOST" 2>&1)
+        STATUS=\$?
 
-        if [ $STATUS -ne 0 ]; then
-            echo "$TIMESTAMP | ERROR | $HOST | Ping failed (DNS or unreachable)" >> "$LOG_FILE"
+        if [ \$STATUS -ne 0 ]; then
+            echo "\$TIMESTAMP | ERROR | \$HOST | Ping failed (DNS or unreachable)" >> "\$LOG_FILE"
             continue
         fi
 
-        PACKETLOSS=$(echo "$OUTPUT" | grep -oP '\d+(?=% packet loss)')
-        AVG_LATENCY=$(echo "$OUTPUT" | awk -F'/' '/rtt/ {print $5}')
+        # Robust packet loss parsing (supports multiple formats)
+        PACKETLOSS=\$(echo "\$OUTPUT" | grep -Eo '[0-9]+% (packet )?loss' | grep -Eo '[0-9]+')
 
-        if [ -z "$PACKETLOSS" ]; then
-            echo "$TIMESTAMP | ERROR | $HOST | Could not parse packet loss" >> "$LOG_FILE"
+        # Robust latency parsing (rtt OR round-trip)
+        AVG_LATENCY=\$(echo "\$OUTPUT" | awk -F'/' '/(rtt|round-trip)/ {print \$5}')
+
+        if [ -z "\$PACKETLOSS" ]; then
+            echo "\$TIMESTAMP | ERROR | \$HOST | Could not parse packet loss" >> "\$LOG_FILE"
+            echo "\$TIMESTAMP | DEBUG | \$HOST | \$OUTPUT" >> "\$LOG_FILE"
             continue
         fi
 
-        echo "$TIMESTAMP | OK | $HOST | Packet loss: ${PACKETLOSS}% | Avg Latency: ${AVG_LATENCY} ms" >> "$LOG_FILE"
+        echo "\$TIMESTAMP | OK | \$HOST | Packet loss: \${PACKETLOSS}% | Avg Latency: \${AVG_LATENCY:-N/A} ms" >> "\$LOG_FILE"
 
     done
 
-    sleep $INTERVAL
+    sleep \$INTERVAL
 
 done
 EOF
